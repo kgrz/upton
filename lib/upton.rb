@@ -34,111 +34,27 @@ module Upton
 
     attr_accessor :verbose, :debug, :sleep_time_between_requests, :stash_folder, :url_array
 
-    ##
-    # This is the main user-facing method for a basic scraper.
-    # Call +scrape+ with a block; this block will be called on 
-    # the text of each instance page, (and optionally, its URL and its index
-    # in the list of instance URLs returned by +get_index+).
-    ##
     def scrape &blk
-      unless self.url_array
-        self.url_array = self.get_index
-      end
       self.scrape_from_list(self.url_array, blk)
     end
 
-    ##
-    # +index_url_or_array+: A list of string URLs, OR
-    #              the URL of the page containing the list of instances.
-    # +selector+: The XPath expression or CSS selector that specifies the 
-    #              anchor elements within the page, if a url is specified for 
-    #              the previous argument.
-    # +selector_method+: +:xpath+ or +:css+. By default, +:xpath+.
-    #
-    # These options are a shortcut. If you plant to override +get_index+, you
-    # do not need to set them.
-    # If you don't specify a selector, the first argument will be treated as a
-    # list of URLs.
-    ##
-    def initialize(index_url_or_array, selector="", selector_method=:xpath)
+    def initialize(*urls)
+      @url_array = urls
 
-      #if first arg is a valid URL, do already-written stuff;
-      #if it's not (or if it's a list?) don't bother with get_index, etc.
-      #e.g. Scraper.new(["http://jeremybmerrill.com"])
-
-      #TODO: rewrite this, because it's a little silly. (i.e. should be a more sensical division of how these arguments work)
-      if index_url_or_array.respond_to? :each_with_index
-        @url_array = index_url_or_array
-      else
-        @index_url = index_url_or_array
-        @index_selector = selector
-        @index_selector_method = selector_method
-      end
-      # If true, then Upton prints information about when it gets
-      # files from the internet and when it gets them from its stash.
       @verbose = false
-
-      # If true, then Upton fetches each instance page only once
-      # future requests for that file are responded to with the locally stashed
-      # version.
-      # You may want to set @debug to false for production (but maybe not).
-      # You can also control stashing behavior on a per-call basis with the
-      # optional second argument to get_page, if, for instance, you want to 
-      # stash certain instance pages, e.g. based on their modification date.
       @debug = true
-      # Index debug does the same, but for index pages.
       @index_debug = false
-
-      # In order to not hammer servers, Upton waits for, by default, 30  
-      # seconds between requests to the remote server.
       @sleep_time_between_requests = 30 #seconds
 
-      # Folder name for stashes, if you want them to be stored somewhere else,
-      # e.g. under /tmp.
       @stash_folder = "stashes"
       unless Dir.exists?(@stash_folder)
         Dir.mkdir(@stash_folder)
       end
+
     end
 
-    ##
-    # If instance pages are paginated, <b>you must override</b> 
-    # this method to return the next URL, given the current URL and its index.
-    #
-    # If instance pages aren't paginated, there's no need to override this.
-    #
-    # Recursion stops if the fetching URL returns an empty string or an error.
-    #
-    # e.g. next_instance_page_url("http://whatever.com/article/upton-sinclairs-the-jungle?page=1", 2)
-    # ought to return "http://whatever.com/article/upton-sinclairs-the-jungle?page=2"
-    ##
-    def next_instance_page_url(url, index)
-      ""
-    end
-
-    ##
-    # If index pages are paginated, <b>you must override</b>
-    # this method to return the next URL, given the current URL and its index.
-    #
-    # If index pages aren't paginated, there's no need to override this.
-    #
-    # Recursion stops if the fetching URL returns an empty string or an error.
-    #
-    # e.g. +next_index_page_url("http://whatever.com/articles?page=1", 2)+
-    # ought to return "http://whatever.com/articles?page=2"
-    ##
-    def next_index_page_url(url, index)
-      ""
-    end
-
-    ##
-    # Writes the scraped result to a CSV at the given filename.
-    ##
     def scrape_to_csv filename, &blk
       require 'csv'
-      unless self.url_array
-        self.url_array = self.get_index
-      end
       CSV.open filename, 'wb' do |csv|
         self.scrape_from_list(self.url_array, blk).each{|document| csv << document }
       end
@@ -153,6 +69,7 @@ module Upton
     ##
     def get_page(url, stash=false)
       return "" if url.empty?
+      url = url.get_index if url.respond_to?(:get_index)
 
       #the filename for each stashed version is a cleaned version of the URL.
       if stash && File.exists?( File.join(@stash_folder, url.gsub(/[^A-Za-z0-9\-]/, "") ) )
@@ -196,39 +113,6 @@ module Upton
     end
 
     ##
-    # Return a list of URLs for the instances you want to scrape.
-    # This can optionally be overridden if, for example, the list of instances
-    # comes from an API.
-    ##
-    def get_index
-      parse_index(get_index_pages(@index_url, 1), @index_selector, @index_selector_method)
-    end
-
-    ##
-    # Using the XPath expression or CSS selector and selector_method that 
-    # uniquely identifies the links in the index, return those links as strings.
-    ##
-    def parse_index(text, selector, selector_method=:xpath)
-      Nokogiri::HTML(text).send(selector_method, selector).to_a.map{|l| l["href"] }
-    end
-
-    ##
-    # Returns the concatenated output of each member of a paginated index,
-    # e.g. a site listing links with 2+ pages.
-    ##
-    def get_index_pages(url, index)
-      resp = self.get_page(url, @index_debug)
-      if !resp.empty? 
-        next_url = self.next_index_page_url(url, index + 1)
-        unless next_url == url
-          next_resp = self.get_index_pages(next_url, index + 1).to_s 
-          resp += next_resp
-        end
-      end
-      resp
-    end
-
-    ##
     # Returns the article at `url`.
     # 
     # If the page is stashed, returns that, otherwise, fetches it from the web.
@@ -259,6 +143,14 @@ module Upton
     # it's often useful to have this slug method for uniquely (almost certainly) identifying pages.
     def slug(url)
       url.split("/")[-1].gsub(/\?.*/, "").gsub(/.html.*/, "")
+    end
+
+    def next_instance_page_url(url, index)
+      ""
+    end
+
+    def next_index_page_url(url, index)
+      ""
     end
 
   end
